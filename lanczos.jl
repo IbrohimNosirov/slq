@@ -1,4 +1,5 @@
 # Date: 2026-02-02
+using Test
 using LinearAlgebra
 include("tridiagonal_qr.jl")
 
@@ -8,27 +9,27 @@ const MACHEPS = eps(Float64)
 # variable names should have [noun]_[qualifier] e.g. cluster_max better than max_cluster
 
 abstract type OrthStrategy end
-struct FULLORTH <: OrthStrategy end
+struct FullOrth <: OrthStrategy end
 struct PRO <: OrthStrategy end
-struct FIRSTORTH <: OrthStrategy end
+struct FirstOrth <: OrthStrategy end
 struct SO <: OrthStrategy end
 
 struct LanczosContext
-  A              :: Matrix{Float64}                 # input matrix.
-  Q_store        :: Union{Matrix{Float64}, Nothing} # Lanczos vectors.
-  W_store        :: Union{Matrix{Float64}, Nothing} # orthogonality tracker.
-  R_store        :: Matrix{Float64}                 # Ritz residuals.
-  a_vec          :: Vector{Float64}                 # main diagonal; size k.
-  b_vec          :: Vector{Float64}                 # off diagonal;size k-1.
-  q_vec          :: Vector{Float64}                 # starting vector.
-  w_distance_arr :: Vector{Float64}                 # Wasserstein distances.
-  ν_distribution :: DiscreteNonParametric           # true distribution.
-  k_lanczos      :: Int64                           # number of iterations.
-  N              :: Int64                           # NxN matrix.
+  A              :: Matrix{Float64}                             # input matrix.
+  Q_store        :: Union{Matrix{Float64}, Nothing}             # Lanczos vectors.
+  W_store        :: Union{Matrix{Float64}, Nothing}             # orthogonality tracker.
+  R_store        :: Matrix{Float64}                             # Ritz residuals.
+  a_vec          :: Vector{Float64}                             # main diagonal; size k.
+  b_vec          :: Vector{Float64}                             # off diagonal;size k-1.
+  q_vec          :: Vector{Float64}                             # starting vector.
+  w_distance_arr :: Vector{Float64}                             # Wasserstein distances.
+  ν_distribution :: DiscreteNonParametric                       # true distribution.
+  k_lanczos      :: Int64                                       # number of iterations.
+  N              :: Int64                                       # NxN matrix.
 end
 
-function LanczosContext(::FULLORTH, A :: AbstractMatrix, q_vec :: AbstractVector, k :: Int64,
-                      ν :: DiscreteNonParametric)
+function LanczosContext(::FullOrth, A :: AbstractMatrix, q_vec :: AbstractVector, k :: Int64,
+                                    ν :: DiscreteNonParametric)
     @assert norm(q_vec) ≈ 1.0 "pass a unit vector."
     N = size(A, 1)
     
@@ -42,7 +43,8 @@ function LanczosContext(::FULLORTH, A :: AbstractMatrix, q_vec :: AbstractVector
     LanczosContext(A, Q_store, W_store, R_store, a_vec, b_vec, q_vec, w_distance_arr, ν, k, N)
 end
 
-function LanczosContext(::PRO, A, q_vec, k, ν)
+function LanczosContext(::PRO, A :: AbstractMatrix, q_vec :: AbstractVector, k :: Int64,
+                               ν :: DiscreteNonParametric)
     @assert norm(q_vec) ≈ 1.0 "pass a unit vector."
     N = size(A, 1)
     
@@ -58,7 +60,8 @@ function LanczosContext(::PRO, A, q_vec, k, ν)
     LanczosContext(A, Q_store, W_store, R_store, a_vec, b_vec, q_vec, w_distance_arr, ν, k, N)
 end
 
-function LanczosContext(::FIRSTORTH, A, q_vec, k, ν)
+function LanczosContext(::FirstOrth, A :: AbstractMatrix, q_vec :: AbstractVector, k :: Int64,
+                               ν :: DiscreteNonParametric)
     @assert norm(q_vec) ≈ 1.0 "pass a unit vector."
     N = size(A, 1)
     
@@ -89,9 +92,9 @@ function LanczosContext(::SO, A, q_vec, k, ν)
 end
 
 # Dispatch to implementations
-lanczos(ctx :: LanczosContext, :: FULLORTH) = lanczos_full_orth(ctx)
+lanczos(ctx :: LanczosContext, :: FullOrth) = lanczos_full_orth(ctx)
 lanczos(ctx :: LanczosContext, :: PRO) = lanczos_pro(ctx)
-lanczos(ctx :: LanczosContext, :: FIRSTORTH) = lanczos_first_orth(ctx)
+lanczos(ctx :: LanczosContext, :: FirstOrth) = lanczos_first_orth(ctx)
 lanczos(ctx :: LanczosContext, :: SO) = lanczos_so(ctx)
 
 # Getters for A and q
@@ -395,42 +398,43 @@ function lanczos_so(ctx :: LanczosContext)
   ctx.k_lanczos
 end
 
-#@testset "Lanczos Implementations Data Flow" begin
-#    @testset "FULLORTH" begin
-let
-  # Common setup
-  N = 100
-  k = 20
-  A = randn(N, N)
-  A = A + A'
-  q_vec = randn(N)
-  q_vec = q_vec / norm(q_vec)
-  
-  # Create a true distribution (discrete measure)
-  evals_true = sort(randn(N))
-  weights_true = ones(N) ./ N
-  weights_true = weights_true / sum(weights_true)
-  ν = DiscreteNonParametric(evals_true, weights_true)
+@testset "Lanczos Implementations Data Flow" begin
+  @testset "FullOrth" begin
+    let
+      # Common setup
+      N = 100
+      k = 20
+      A = randn(N, N)
+      A = A + A'
+      q_vec = randn(N)
+      q_vec = q_vec / norm(q_vec)
+      
+      # Create a true distribution (discrete measure)
+      evals_true = sort(randn(N))
+      weights_true = ones(N) ./ N
+      weights_true = weights_true / sum(weights_true)
+      ν = DiscreteNonParametric(evals_true, weights_true)
 
-  ctx = LanczosContext(FULLORTH(), A, q_vec, k, ν)
-  j = lanczos(ctx, FULLORTH())
-  
-  # Check a_vec and b_vec are populated
-  @test any(ctx.a_vec .!= 0.0)
-  @test any(ctx.b_vec .!= 0.0)
-  
-  # Check residuals are tracked (R_store should be populated)
-  @test any(ctx.R_store .!= 0.0)
-  @test size(ctx.R_store, 1) == k
-  
-  # Check Wasserstein distances are tracked
-  @test any(ctx.w_distance_arr .!= 0.0)
-  @test length(ctx.w_distance_arr) == k
-  
-  # Check Q_store exists and is populated
-  @test ctx.Q_store !== nothing
-  @test size(ctx.Q_store) == (N, k)
-end
+      ctx = LanczosContext(FullOrth(), A, q_vec, k, ν)
+      j = lanczos(ctx, FullOrth())
+      
+      # Check a_vec and b_vec are populated
+      @test any(ctx.a_vec .!= 0.0)
+      @test any(ctx.b_vec .!= 0.0)
+      
+      # Check residuals are tracked (R_store should be populated)
+      @test any(ctx.R_store .!= 0.0)
+      @test size(ctx.R_store, 1) == k
+      
+      # Check Wasserstein distances are tracked
+      @test any(ctx.w_distance_arr .!= 0.0)
+      @test length(ctx.w_distance_arr) == k
+      
+      # Check Q_store exists and is populated
+      @test ctx.Q_store !== nothing
+      @test size(ctx.Q_store) == (N, k)
+    end
+  end
 
 #    @testset "PRO" begin
 #        let
@@ -467,7 +471,7 @@ end
 #        end
 #    end
 
-#    @testset "FIRSTORTH" begin
+#    @testset "FirstOrth" begin
 #        let
 #            # Common setup
 #            N = 100
@@ -481,8 +485,8 @@ end
 #            weights_true = rand(N)
 #            weights_true = weights_true / sum(weights_true)
 #            ν = DiscreteNonParametric(evals_true, weights_true)
-#            ctx = LanczosContext(FIRSTORTH(), A, q, k, ν)
-#            j = lanczos(ctx, FIRSTORTH())
+#            ctx = LanczosContext(FirstOrth(), A, q, k, ν)
+#            j = lanczos(ctx, FirstOrth())
 #            
 #            # Check a_vec and b_vec are populated
 #            @test any(ctx.a_vec .!= 0.0)
@@ -499,7 +503,7 @@ end
 #            # Check W_store exists (used for first orth detection)
 #            @test ctx.W_store !== nothing
 #            
-#            # Q_store should be nothing for FIRSTORTH
+#            # Q_store should be nothing for FirstOrth
 #            @test ctx.Q_store === nothing
 #        end
 #    end
@@ -538,4 +542,4 @@ end
 #            @test size(ctx.Q_store) == (N, k)
 #        end
 #    end
-#end
+end

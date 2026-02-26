@@ -1,7 +1,10 @@
 using LinearAlgebra
 using Plots
+using Random
 
-function kronecker_quasirand_vec(N, start=0)
+Random.seed!(3)
+
+function kronecker_quasirand_vec(points_count::Integer, start=0)
   d = 1
   φ = 1.0 + 1.0/d
   for k = 1:10
@@ -11,8 +14,8 @@ function kronecker_quasirand_vec(N, start=0)
   end
   αs = [mod(1.0/φ^j, 1.0) for j = 1:d]
   # Compute the quasi-random sequence.
-  z = zeros(N)
-  for j = 1:N
+  z = zeros(points_count)
+  for j = 1:points_count
     z[j] = mod(0.5 + (start+j)*αs[d], 1.0)
   end
 
@@ -22,7 +25,7 @@ end
 # TODO: don't form H as a dense matrix.
 
 # This gives me a matrix of Householder reflectors inside of A. 
-function reduce_tridiag!(A :: AbstractMatrix)
+function reduce_tridiag!(A::AbstractMatrix)
   n = size(A, 1)
   τ = view(A, 1:n, n)
   for k = 1:n-2
@@ -47,7 +50,7 @@ end
 tridiag_params(A) = tridiag_params!(A, zeros(size(A,1)), zeros(size(A,1)-1))
 get_tridiag(A) = SymTridiagonal(tridiag_params(A))
 
-function make_matrix(evals :: AbstractVector)
+function make_matrix(evals::AbstractVector)
   n = size(evals, 1)
   u = randn(n)
   H = I - 2u*u'./(u'*u) # any unitary transformation.
@@ -62,7 +65,7 @@ function make_matrix(evals :: AbstractVector)
   A
 end
 
-function make_tridiag_matrix(evals :: AbstractVector)
+function make_tridiag_matrix(evals::AbstractVector)
   A = make_matrix(evals)
   reduce_tridiag!(A)
   a = diag(A)
@@ -73,11 +76,11 @@ function make_tridiag_matrix(evals :: AbstractVector)
 end
 
 struct Interval
-  start  :: Float64
-  finish :: Float64 
+  start ::Float64
+  finish::Float64 
 end
 
-function Interval(start :: Float64, finish :: Float64)
+function Interval(start::Float64, finish::Float64)
   @assert start  > 0
   @assert finish > 0 
   @assert finish - start >= 0
@@ -85,7 +88,7 @@ function Interval(start :: Float64, finish :: Float64)
   Interval(start, finish)
 end
 
-function make_functional_decay!(evals :: AbstractVector, interval :: Interval, fun :: Function)
+function make_functional_decay!(evals::AbstractVector, interval::Interval, fun::Function)
   evals_count = size(evals, 1)
   @assert evals_count > 3
 
@@ -96,7 +99,7 @@ function make_functional_decay!(evals :: AbstractVector, interval :: Interval, f
   sort!(evals)
 end
 
-function make_cluster!(evals :: AbstractVector, interval :: Interval, epsilon :: Float64)
+function make_cluster!(evals::AbstractVector, interval::Interval, epsilon::Float64)
   evals_count = size(evals, 1)
   @assert evals_count > 0
   @assert epsilon > 1e-8
@@ -132,87 +135,4 @@ matern_11_2(r, l=1.0) = (1 + sqrt(11)*r/l + 55*r^2/(9*l^2) + 55*sqrt(11)*r^3/(27
 
 # Matérn ν = 13/2 (C^12)
 matern_13_2(r, l=1.0) = (1 + sqrt(13)*r/l + 26*r^2/(3*l^2) + 13*sqrt(13)*r^3/(9*l^3) + 169*r^4/(54*l^4) + 169*sqrt(13)*r^5/(486*l^5) + 2197*r^6/(4374*l^6)) * exp(-sqrt(13)*r/l)
-
-#let
-#evals_count = 100
-#evals = zeros(evals_count)
-#make_functional_decay!(evals, Interval(0,1), gaussian)
-#println(evals)
-#gr()
-#scatter(range(1,evals_count), evals)
-#end
-#
-#let
-#evals_count = 100
-#evals = zeros(evals_count)
-#make_functional_decay!(evals, Interval(0,1), matern_1_2)
-#println(evals)
-#gr()
-#scatter(range(1,evals_count), evals)
-#end
-#
-#let
-#evals_count = 100
-#evals = zeros(evals_count)
-#make_functional_decay!(evals, Interval(0,1), matern_3_2)
-#println(evals)
-#gr()
-#scatter(range(1,evals_count), evals)
-#end
-#
-#let
-#evals_count = 100
-#evals = zeros(evals_count)
-#make_functional_decay!(evals, Interval(0,1), matern_5_2)
-#println(evals)
-#gr()
-#scatter(range(1,evals_count), evals)
-#end
-#
-#let
-#evals_count = 100
-#evals = zeros(evals_count)
-#make_functional_decay!(evals, Interval(0,1), matern_7_2)
-#println(evals)
-#gr()
-#scatter(range(1,evals_count), evals)
-#end
-#
-#let
-#evals_count = 100
-#evals = zeros(evals_count)
-#make_functional_decay!(evals, Interval(0,1), matern_9_2)
-#println(evals)
-#gr()
-#scatter(range(1,evals_count), evals)
-#end
-#
-#let
-#evals_count = 100
-#evals = zeros(evals_count)
-#make_functional_decay!(evals, Interval(0,1), matern_11_2)
-#println(evals)
-#gr()
-#scatter(range(1,evals_count), evals)
-#end
-#
-#let
-#evals_count = 100
-#evals = zeros(evals_count)
-#make_functional_decay!(evals, Interval(0,1), matern_13_2)
-#println(evals)
-#gr()
-#scatter(range(1,evals_count), evals)
-#end
-
-#let
-## 100 eigenvalues in 1 cluster, each with radius 1e-7
-#evals_count = 100
-#epsilon = 1e-7
-#evals = zeros(evals_count)
-#make_cluster!(evals, Interval(0,1), epsilon)
-#gr()
-#scatter(range(1,evals_count), evals)
-#end
-
 

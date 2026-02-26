@@ -1,264 +1,204 @@
-using LinearAlgebra
-using Profile
-using OptimalTransport
-using Distributions
-using DataStructures
-using StatProfilerHTML
-include("matrix_gallery.jl")
-
-const MACHEPS = eps(Float64)
+const MACHEPS     = eps(Float64)
+const MACHEPS_INV = 1.0 / eps(Float64)
 
 # NEED AT MINIMUM 20 asserts, HAVE 5 asserts.
 # I should traverse only the off-diagonal elements.
 
-function givens_rotation(x :: Float64, z :: Float64)
-  c, s = LinearAlgebra.givensAlgorithm(x, z)
-  s = -conj(s)
-  c, s
+function givens_rotation(F::Float64, G::Float64)
+#       DLARTG generates a plane rotation so that
+#       
+#          [  C  S  ]  .  [ F ]  =  [ R ]
+#          [ -S  C  ]     [ G ]     [ 0 ]
+#       
+#       where C**2 + S**2 = 1.
+
+        C = Ref{Float64}()
+        S = Ref{Float64}()
+        R = Ref{Float64}()
+
+        ccall((:dlartg_, Base.liblapack_name), Cvoid,
+              (Ref{Float64}, Ref{Float64}, Ref{Float64}, Ref{Float64}, Ref{Float64}), F, G, C, S, R)
+
+        C[], S[]
 end
 
-function wilkinson_shift(a1:: Float64, a2 :: Float64, b :: Float64)
+# this works perfectly
+function eigen_small!(A::SubArray{Float64}, B::SubArray{Float64}, C::SubArray{Float64})
+#       DLAEV2 computes the eigendecomposition of a 2-by-2 symmetric matrix
+#               [  A   B  ]
+#               [  B   C  ].
+#       On return, RT1 is the eigenvalue of larger absolute value,
+#                  RT2 is the eigenvalue of smaller absolute value,
+#       and (CS1,SN1) is the unit right eigenvector for RT1, giving the decomposition
+#
+#               [ CS1  SN1 ] [  A   B  ] [ CS1 -SN1 ]  =  [ RT1  0  ]
+#               [-SN1  CS1 ] [  B   C  ] [ SN1  CS1 ]     [  0  RT2 ]. 
+
+        CS1 = Ref{Float64}()
+        SN1 = Ref{Float64}()
+        RT1 = Ref{Float64}()
+        RT2 = Ref{Float64}()
+
+        ccall((:dlaev2_, Base.liblapack_name), Cvoid,
+              (Ref{Float64}, Ref{Float64}, Ref{Float64}, Ref{Float64}, Ref{Float64}, Ref{Float64}, Ref{Float64}),
+               A, B, C, A, C, CS1, SN1)
+
+        B .= 0.0
+
+        CS1[], SN1[]
+end
+
+function wilkinson_shift(a1::T, a2::T, b::T) where T <: AbstractFloat
   # a1 last index, a2 second to last index, b last index.
-  d = (a2 - a1)/2.0
-  if abs(d) < MACHEPS && abs(b) < MACHEPS
-    return a1
-  end
-  denominator = d + sign(d)*sqrt(d*d + b*b)
-  if abs(denominator) < 5.0*MACHEPS
-    return a1
-  end
-  shift = a1 - (b*b)/denominator
+        d = (a2 - a1)/2.0
+        if abs(d) < MACHEPS && abs(b) < MACHEPS
+                return a1
+        end
+        denominator = d + sign(d)*sqrt(d*d + b*b)
+        if abs(denominator) < 5.0 * MACHEPS
+                return a1
+        end
+        shift = a1 - (b*b)/denominator
 
-  shift
+        shift
 end
 
-function make_bulge!(a::AbstractVector{Float64}, b::AbstractVector{Float64},
-  c::Float64, s::Float64)
-
-  @assert size(a)[1] == 2   "input is not a 2x2 block due to input a."
-  @assert size(b)[1] == 2   "input is not a 2x2 block due to input b."
-
-  a1_tmp = c*(a[1]*c - b[1]*s) - s*(b[1]*c - a[2]*s)
-  a2_tmp = s*(a[1]*s + b[1]*c) + c*(b[1]*s + a[2]*c)
-  b[1]   = c*(a[1]*s + b[1]*c) - s*(b[1]*s + a[2]*c)
-  bulge  = s*-b[2]
-  b[2]   = c* b[2]
-  a[1]   = a1_tmp
-  a[2]   = a2_tmp
-
-  bulge
-end
-
-function cancel_bulge!(a::AbstractVector{Float64}, b::AbstractVector{Float64},
-             c::Float64, s::Float64,
-             bulge::Float64)
-#  @assert abs(bulge) >= MACHEPS "bulge cannot be zero before \
-#  cancellation."
-  @assert size(a)[1] == 2   "input is not a 3x3 block due to a."
-  @assert size(b)[1] == 2   "input is not a 3x3 block due to b."
-
-  a1_tmp = c*(a[1]*c - b[2]*s) - s*(b[2]*c - a[2]*s)
-  a2_tmp = s*(a[1]*s + b[2]*c) + c*(b[2]*s + a[2]*c)
-  b1_tmp = b[1]*c - bulge*s
-
-  b[2]   = c*(a[1]*s + b[2]*c) - s*(b[2]*s + a[2]*c)
-  bulge  = b[1]*s + bulge*c
-  a[1]   = a1_tmp
-  a[2]   = a2_tmp
-  b[1]   = b1_tmp
-
-#  @assert abs(bulge) < 10.0*MACHEPS "bulge must be zero after cancellation."
-end
-
-function move_bulge!(a::AbstractVector{Float64}, b::AbstractVector{Float64},
-           c::Float64, s::Float64,
-           bulge::Float64)
-#  @assert b[1]*s + bulge*c < 1000.0*MACHEPS (b[1], c, s, bulge,
-#b[1]*s + bulge*c)
-
-  a1_tmp = c*(a[1]*c - b[2]*s) - s*(b[2]*c - a[2]*s)
-  a2_tmp = s*(a[1]*s + b[2]*c) + c*(b[2]*s + a[2]*c)
-  b[1]   = b[1]*c - bulge*s
-  b[2]   = c*(a[1]*s + b[2]*c) - s*(b[2]*s + a[2]*c)
-  bulge  = -s*b[3]
-  b[3]   =  c*b[3]
-  a[1]   =  a1_tmp
-  a[2]   =  a2_tmp
-
-  bulge
-end
-
-function apply_givens_to_evec_row!(evec_row :: AbstractVector,
-                   c :: Float64, s :: Float64,
-                   i :: Int64)
-  tau1      = evec_row[i]
-  tau2      = evec_row[i+1]
-  evec_row[i]   = c*tau1 + s*tau2
-  evec_row[i+1] = -s*tau1 + c*tau2
+function apply_givens_to_evec_row!(evec_row::AbstractVector{T}, c::T, s::T, i::Integer) where T <: AbstractFloat
+  tau1 = evec_row[i]
+  tau2 = evec_row[i+1]
+  evec_row[i]   = c*tau1 - s*tau2
+  evec_row[i+1] = s*tau1 + c*tau2
 end
 
 # 2x2 matrix case
-function apply_evec_to_evec_row!(evec_row :: AbstractVector,
-                 v1 :: Float64, v2 :: Float64,
-                 v3 :: Float64, v4 :: Float64,
-                 i :: Int64)
-  tau1      = evec_row[i]
-  tau2      = evec_row[i+1]
+function apply_evec_to_evec_row!(evec_row::AbstractVector{T}, v1::T, v2::T, v3::T, v4::T,
+                                 i::Integer) where T <: AbstractFloat
+  tau1 = evec_row[i]
+  tau2 = evec_row[i+1]
   evec_row[i]   = v1*tau1 - v3*tau2
   evec_row[i+1] = v2*tau1 + v4*tau2
 end
 
-function do_bulge_chasing!(a::AbstractVector, b::AbstractVector,
-               evec_row::AbstractVector,
-               s_idx::Int64, f_idx::Int64)
-  @assert size(a)[1] - size(b)[1] == 1 "a, b dimension mismatch."
+function chase_bulge!(diagonal::AbstractVector{T}, subdiagonal::AbstractVector{T}, evec_row::AbstractVector{T},
+                           idx_start::Integer, idx_finish::Integer) where T <: AbstractFloat
+        @assert size(diagonal, 1) - size(subdiagonal, 1) == 1 "diagonal-subdiagonal dimension mismatch."
 
-  # s_idx and f_idx represent bounds on the big submatrix.
-  # We chase the bulge through this big submatrix without any checks.
-  # a1 last index, a2 second to last index, b last index.
-  shift = wilkinson_shift(a[f_idx], a[f_idx-1], b[f_idx-1])
-  x = a[s_idx] - shift
-  z = b[s_idx]
-  c, s = givens_rotation(x, z)
-  apply_givens_to_evec_row!(evec_row, c, s, s_idx)
+        # idx_start and idx_finish are subdiagonal indices of an unreduced block.
+        # We chase the bulge through this big submatrix without any checks.
+        shift = wilkinson_shift(diagonal[idx_finish+1], diagonal[idx_finish], subdiagonal[idx_finish])
+        x = diagonal[idx_start] - shift
+        z = subdiagonal[idx_start]
 
-  bulge = make_bulge!(view(a, s_idx:s_idx+1), view(b, s_idx:s_idx+1), c, s)
+        for i = idx_start:idx_finish
+                c, s = givens_rotation(x, z)
+                apply_givens_to_evec_row!(evec_row, c, s, i)
 
-  x = b[s_idx]
-  z = bulge
+                tmp1 = c*subdiagonal[i] - s*diagonal[i]
+                tmp2 = c*diagonal[i+1] - s*subdiagonal[i]
 
-  p = s_idx
-  q = f_idx
+                diagonal[i]    = c*(c*diagonal[i] + s*subdiagonal[i]) + s*(c*subdiagonal[i] + s*diagonal[i+1])
+                diagonal[i+1]  = c*tmp2 - s*tmp1
+                subdiagonal[i] = c*tmp1 + s*tmp2
 
-  for i = p+1:q-2
-    c, s = givens_rotation(x, z)
-    apply_givens_to_evec_row!(evec_row, c, s, i)
+                if i > idx_start
+                        if abs(subdiagonal[i-1]) < 2.0 * MACHEPS * (abs(diagonal[i-1]) + abs(diagonal[i]))
+                                subdiagonal[i-1] = 0.0
+                        else
+                                subdiagonal[i-1] = c*subdiagonal[i-1] + s*z
+                        end
+                end
 
-    bulge = move_bulge!(view(a, i:i+1), view(b, i-1:i+1), c, s, bulge)
+                x = subdiagonal[i]
 
-    if abs(b[i-1]) < MACHEPS*(abs(a[i-1]) + abs(a[i])) 
-      b[i-1] = 0.0;
-    end
+                if i < idx_finish
+                        z = s*subdiagonal[i+1]
+                        subdiagonal[i+1] = c*subdiagonal[i+1]
+                end
+        end
 
-    x = b[i]
-    z = bulge
-  end
-
-  c, s = givens_rotation(x, z)
-  apply_givens_to_evec_row!(evec_row, c, s, q-1)
-
-  cancel_bulge!(view(a, q-1:q), view(b, q-2:q-1), c, s, bulge)
-
-  if abs(b[q-2]) < 2*MACHEPS*(abs(a[q-2]) + abs(a[q-1])) 
-    b[q-2] = 0.0
-  end
-
-  if abs(b[q-1]) < 2*MACHEPS*(abs(a[q-1]) + abs(a[q]))
-    b[q-1] = 0.0
-  end
+        if abs(subdiagonal[idx_finish]) < 2.0 * MACHEPS * (abs(diagonal[idx_finish])+abs(diagonal[idx_finish+1]))
+                subdiagonal[idx_finish] = 0.0
+        end
 end
 
-function qr_tridiag!(a :: AbstractVector, b :: AbstractVector, IDX :: Int64)
-  N = size(a, 1)
-  MAX_ITER = 3*N
-  evec_row = zeros(N)
-  evec_row[IDX] = 1.0
-  converged = false
-  s_idx = 1
-  f_idx = N
+function qr_tridiag!(diagonal::AbstractVector{T}, subdiagonal::AbstractVector{T}, evec_row::AbstractVector{T},
+                                                        index::Integer) where T <: AbstractFloat 
+        diagonal_n = size(diagonal, 1)
+        subdiagonal_n = size(subdiagonal, 1)
+        @assert diagonal_n - subdiagonal_n == 1 "diagonal-subdiagonal mismatch."
+        @assert diagonal_n == size(evec_row, 1) "evec_row diagonal mismatch."
 
-  # TODO: an iteration is 1 to N.
-  for i = 1:MAX_ITER
-    @assert i != MAX_ITER "hit max iteration."
-    # indices of a, not b.
+        max_iter = 30*diagonal_n
+        evec_row[index] = 1.0
 
-    # sweep off-diagonal looking for non-zeros.
-    for j = 1:N-1
-      if b[j] != 0.0
-        s_idx = j # s_idx -> j in a[j]; a[j] sits right above b[j].
-        break
-      end
+        # Key detail: there are diagonal_n number of eval,
+        # but we iterate until all subdiagonal_n entries
+        # go to zero.
+        
+        converged = false
 
-      if j == N-1
-        converged = true
-      end
-    end
+	for i = 1:max_iter
+		@assert i != max_iter "hit max iteration."
 
-    if converged
-      break
-    end
+                # if all subdiagonal entries are zero, converge.
+                if iszero(subdiagonal)
+                        converged = true
+                        break
+                end
 
-    for k = s_idx:N-1
-      if b[k] == 0.0
-        f_idx = k
-        break
-      end
-    end
+		# sweep off-diagonal looking for unreduced blocks.
+                j = 1
+                idx_start  = 0
+                idx_finish = 0
+                unreduced_block_found = false
 
-    @assert f_idx - s_idx > 0 "not a matrix."
+                # logic is right, but needs cleaning
+                while j <= subdiagonal_n
+                        idx_start  = 0
+                        idx_finish = 0
 
-    if f_idx - s_idx == 1
-      # 2-by-2 matrix
-#      println("triggers")
-      evals, evecs = eigen!(SymTridiagonal(view(a, s_idx:f_idx),
-                         view(b, s_idx:f_idx-1)))
-      a[s_idx:f_idx] = evals
-      b[s_idx] = 0.0
-      apply_evec_to_evec_row!(evec_row, evecs[1,1], evecs[1,2],
-                        evecs[2,1], evecs[2,2],s_idx)
-    end
+                        while j <= subdiagonal_n
+                                if subdiagonal[j] != 0.0
+                                        idx_start = j
+                                        break
+                                end
+                                j += 1
+                        end
 
-    if f_idx-s_idx > 1
-      do_bulge_chasing!(a, b, evec_row, s_idx, f_idx)
-    end
-  end
+                        while j < subdiagonal_n
+                                if subdiagonal[j+1] == 0.0
+                                        idx_finish = j
+                                        break
+                                elseif j+1 == subdiagonal_n
+                                        j += 1
+                                        idx_finish = j
+                                        break
+                                end
+                                j += 1
+                        end
 
-  p = sortperm(a)
-  a[p]
-  evec_row[p]
+                        if idx_start != 0 && idx_finish != 0
+                                unreduced_block_found = true
+                        end
+
+                        if idx_finish == idx_start && unreduced_block_found
+                                CS, SN = eigen_small!(view(diagonal,    idx_start:idx_finish),
+                                                      view(subdiagonal, idx_start:idx_finish),
+                                                      view(diagonal,    idx_start+1:idx_finish+1))
+                                apply_evec_to_evec_row!(evec_row, CS, SN, SN, CS, idx_start)
+                                unreduced_block_found = false
+                                j += 1
+                        end
+
+                        if idx_finish > idx_start && unreduced_block_found
+                                chase_bulge!(diagonal, subdiagonal, evec_row, idx_start, idx_finish)
+                                unreduced_block_found = false
+                                j += 1
+                        end
+                end
+	end
+
+        p = sortperm(diagonal)
+        diagonal .= diagonal[p]
+        evec_row .= evec_row[p]
 end
-
-#let
-#  evals_count = 100
-#  evals = zeros(evals_count)
-#  make_functional_decay!(evals, Interval(0,1), matern_1_2)
-#
-#  evals_mine, b = make_tridiag_matrix(evals)
-#  qr_tridiag!(evals_mine, b, 1)
-#
-#  evals_count = 2000
-#  evals = zeros(evals_count)
-#  make_functional_decay!(evals, Interval(0,1), matern_1_2)
-#
-#  evals_mine, b = make_tridiag_matrix(evals)
-#  println("started eigensolve")
-#  evecs_mine = @time qr_tridiag!(evals_mine, b, 1)
-#  p = sortperm(evals_mine)
-#  evals_mine = evals_mine[p]
-#  evecs_mine = evecs_mine[p]
-#
-#  evals = zeros(evals_count)
-#  make_functional_decay!(evals, Interval(0,1), matern_1_2)
-#
-#  evals_mine, b = make_tridiag_matrix(evals)
-#  evecs_mine = @profilehtml qr_tridiag!(evals_mine, b, 1)
-#  p = sortperm(evals_mine)
-#  evals_mine = evals_mine[p]
-#  evecs_mine = evecs_mine[p]
-#
-#  a, b = make_tridiag_matrix(evals)
-#  evals_lapack, evecs_lapack = @time eigen!(SymTridiagonal(a, b))
-#  evecs_lapack = evecs_lapack[1,:]
-#  p = sortperm(evals_lapack)
-#  evals_lapack = evals_lapack[p]
-#  evecs_lapack = evecs_lapack[p]
-#
-##  evec_err = norm(abs.(evecs_mine) - abs.(evecs_lapack), Inf)
-##  println("max evec error ", evec_err)
-##
-#  evals_lapack_err = maximum(abs.(evals .- evals_lapack)./abs.(evals))
-#  println("max lapack eval error ", evals_lapack_err)
-#
-#  evals_mine_err = maximum(abs.(evals .- evals_mine)./abs.(evals))
-#  println("max mine eval errror ", evals_mine_err)
-#end

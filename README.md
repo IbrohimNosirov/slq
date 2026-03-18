@@ -1,16 +1,23 @@
 ## Performant implementation of Stochastic Lanczos Quadrature with robust
 ## stopping criteria.
 
-* Make a more robust test suite.
-* Finish selective orthogonalization.
+DONE
+* clean up QR tridiag so it doesn't beat up on memory.
+* Finish selective orthogonalization/deflation.
 * Make all of the tests pass for each instance of Lanczos.
+* build a ton of different spectra and measure convergence.
+
+TODO [for the manuscript.]
 * Set the converged values to 1/n.
 * Find the 4 data matrices.
-* Pull in all of the sources.
-* Make figures.
-* Read about quadrature.
+* check the residual bounds I'm getting against Davis-Kahan (might need to loosen)
+* Pull in all of the sources. (Tyler/Tom, Chris, block lanczos (BOLT) Kingsley, Alice + kernel-based approximations,
+  older work by Stefan Guttel on restarted Lanczos for f(A)b, Paige's theory (1987->2021), Davis Kahan)
+* Use PrecompileTools.jl to precompile when shipping package.
+* LAPACK chkfinite
 
-* Write the manuscript.
+* Make figures.
+* finish the slides of Guilia's group.
 
 Parameters
 
@@ -60,3 +67,4 @@ Pause
 
 It is only necessary to retain the threshold vectors after the pause; the
 Lanczos vectors can be rewound.
+

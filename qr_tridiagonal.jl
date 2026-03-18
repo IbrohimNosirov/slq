@@ -14,7 +14,7 @@ function qr_tridiag!(diag::AbstractVector{Float64}, subdiag::AbstractVector{Floa
         itr_max = eval_itr_max * diag_n
         # There are diag_n number of evals, but we iterate until all
         # subdiag_n entries go to zero.
-	for i = 1:itr_max
+        for i = 1:itr_max
                 if iszero(subdiag)
                         break
                 end
@@ -48,7 +48,7 @@ function qr_tridiag!(diag::AbstractVector{Float64}, subdiag::AbstractVector{Floa
                         end
                         j += 1
                 end
-	end
+        end
         p = sortperm(diag)
         diag .= diag[p]
         evec_row .= evec_row[p]

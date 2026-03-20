@@ -1,6 +1,5 @@
 using LinearAlgebra
-#using Profile
-#using PProf
+using Profile
 #using OptimalTransport
 #using Distributions
 #using DataStructures
@@ -8,7 +7,7 @@ using LinearAlgebra
 
 #include("multicore_slq.jl")
 include("lanczos.jl")
-include("qr_tridiag.jl")
+include("qr_tridiagonal.jl")
 include("matrix_gallery.jl")
 
 #let
@@ -173,19 +172,24 @@ let
         A = Array{Float64}(undef, evals_count, evals_count)
         vec_random = Array{Float64}(undef, evals_count)
 
-        make_functional_decay!(evals_true, Interval(0.1,1000), gaussian)
+        #make_functional_decay!(evals_true, Interval(0.1,1000), gaussian)
+        make_cluster!(evals_true, Interval(0.1, 1), 1.0)
+        println("evals_true ", evals_true)
         make_kronecker_quasirandom!(vec_random)
         make_matrix!(A, vec_random, evals_true)
         vec_random /= sqrt(sum(vec_random .* vec_random))
 
         context = LanczosContext(SO(), A, vec_random, 30)
-        @time lanczos!(SO(), context)
+        println(@allocations lanczos!(SO(), context))
+        context = LanczosContext(SO(), A, vec_random, 30)
+        lanczos!(SO(), context)
         context.evec_row .= zeros(size(context.evec_row, 1))
         context.evec_row[1] = 1.0
-        qr_tridiag!(context.diag, context.subdiag, context.evec_row)
-
-#        evals_error = maximum(abs.(evals_true .- evals_lanczos) ./ abs.(evals_true))
-#        println("maximum eigenvalue error ", evals_error)
+        qr_tridiagonal!(context.diagonal, context.subdiagonal, context.evec_row)
+        evals_lanczos = context.diagonal
+        println("evals_lanczos ", evals_lanczos)
+        evals_error = maximum(abs.(evals_true .- evals_lanczos) ./ abs.(evals_true))
+        println("maximum eigenvalue error ", evals_error)
 end
 
 #let

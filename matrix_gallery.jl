@@ -94,9 +94,9 @@ function make_cluster!(evals::AbstractVector, interval::Interval, epsilon::Float
         @assert epsilon > 1e-8
 
         seed = evals_count * 42
-        # there are two different kinds of partition: by index (i) and by range (e).
         interval_range = interval.finish - interval.start
-        evals .= epsilon .* kronecker_quasirand_vec(evals_count) ./ interval_range .+ interval.start
+        make_kronecker_quasirandom!(evals)
+        evals .= epsilon .* evals ./ interval_range .+ interval.start
 
         sort!(evals)
 end

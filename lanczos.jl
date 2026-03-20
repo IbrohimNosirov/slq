@@ -1,8 +1,5 @@
 include("qr_tridiagonal.jl")
 
-# TODO: there is a way to do this correctly -> we'll pass FullOrth and not FullOrth()
-# I read in the documentation that there is a idiomatic way of making buttons.
-
 abstract type OrthStrategy end
 struct FullOrth <: OrthStrategy end
 struct PRO <: OrthStrategy end
@@ -10,35 +7,37 @@ struct FirstOrth <: OrthStrategy end
 struct SO <: OrthStrategy end
 
 struct LanczosContext
-	A            :: Matrix{Float64}
-	Q_store      :: Union{Matrix{Float64}, Nothing}
-	W_store      :: Union{Matrix{Float64}, Nothing}
-	R_store      :: Matrix{Float64} 
-	diagonal     :: Vector{Float64}
-	subdiagonal  :: Vector{Float64}
-	vec_curr     :: Vector{Float64}
-        vec_prev     :: Vector{Float64}
-        vec_residual :: Vector{Float64} # I think we can get rid of this(?)
-        evec_row     :: Vector{Float64}
-	step_count   :: Int64
-	matrix_size  :: Int64
+	A                       :: Matrix{Float64}
+	Q_store                 :: Union{Matrix{Float64}, Nothing}
+	W_store                 :: Union{Matrix{Float64}, Nothing}
+	ritz_errors             :: Vector{Float64} 
+	diagonal                :: Vector{Float64}
+	subdiagonal             :: Vector{Float64}
+        copy_diagonal           :: Vector{Float64}
+	copy_subdiagonal        :: Vector{Float64}
+	vec_curr                :: Vector{Float64}
+        vec_prev                :: Vector{Float64}
+        vec_residual            :: Vector{Float64} # I think we can get rid of this(?)
+        evec_row                :: Vector{Float64}
+	step_count              :: Int64
+	matrix_size             :: Int64
 end
 
-function LanczosContext(::FullOrth, A::AbstractMatrix, vec_curr::AbstractVector, step_count::Int64)
-        @assert sum(vec_curr .* vec_curr) ≈ 1.0 "pass a unit vec."
-        matrix_size = size(A, 1)
-        Q_store = Array{Float64}(undef, matrix_size, step_count)
-        W_store = nothing
-        R_store = Array{Float64}(undef, step_count, step_count)
-        diagonal = Array{Float64}(undef, step_count)
-        subdiagonal = Array{Float64}(undef, step_count-1)
-        vec_prev = similar(vec_curr)
-        vec_residual = similar(vec_curr)
-        evec_row = zeros(matrix_size)
-        evec_row[1] = 1.0
-        LanczosContext(A, Q_store, W_store, R_store, diagonal, subdiagonal, vec_curr, vec_prev, vec_residual, evec_row,
-                        step_count, matrix_size)
-end
+#function LanczosContext(::FullOrth, A::AbstractMatrix, vec_curr::AbstractVector, step_count::Int64)
+#        @assert sum(vec_curr .* vec_curr) ≈ 1.0 "pass a unit vec."
+#        matrix_size = size(A, 1)
+#        Q_store = Array{Float64}(undef, matrix_size, step_count)
+#        W_store = nothing
+#        ritz_errors = Array{Float64}(undef, step_count, step_count)
+#        diagonal = Array{Float64}(undef, step_count)
+#        subdiagonal = Array{Float64}(undef, step_count-1)
+#        vec_prev = similar(vec_curr)
+#        vec_residual = similar(vec_curr)
+#        evec_row = zeros(matrix_size)
+#        evec_row[1] = 1.0
+#        LanczosContext(A, Q_store, W_store, ritz_errors, diagonal, subdiagonal, vec_curr, vec_prev, vec_residual, evec_row,
+#                        step_count, matrix_size)
+#end
 
 #function LanczosContext(::PRO, A :: AbstractMatrix, vec_curr :: AbstractVector, k :: Int64)
 #        @assert sum(vec_curr .* vec_curr) ≈ 1.0 "pass a unit vec."
@@ -46,12 +45,12 @@ end
 #
 #        Q_store = zeros(matrix_size, k)
 #        W_store = diagonalm(0  => ones(k+1), -1  => eps(Float64)*ones(k), 1  => eps(Float64)*ones(k))
-#        R_store = zeros(k, k)
+#        ritz_errors = zeros(k, k)
 #        diagonal = zeros(k)
 #        subdiagonal = zeros(k-1)
 #        w_distance_arr = zeros(k)
 #
-#        LanczosContext(A, Q_store, W_store, R_store, diagonal, subdiagonal, vec_curr, w_distance_arr, k, matrix_size)
+#        LanczosContext(A, Q_store, W_store, ritz_errors, diagonal, subdiagonal, vec_curr, w_distance_arr, k, matrix_size)
 #end
 
 #function LanczosContext(::FirstOrth, A :: AbstractMatrix, vec_curr :: AbstractVector, k :: Int64)
@@ -60,12 +59,12 @@ end
 #
 #        Q_store = nothing
 #        W_store = diagonalm(0  => ones(k+1), -1  => eps(Float64)*ones(k), 1  => eps(Float64)*ones(k))
-#        R_store = zeros(k, k)
+#        ritz_errors = zeros(k, k)
 #        diagonal = zeros(k)
 #        subdiagonal = zeros(k-1)
 #        w_distance_arr = zeros(k)
 #
-#        LanczosContext(A, Q_store, W_store, R_store, diagonal, subdiagonal, vec_curr, w_distance_arr, k, matrix_size)
+#        LanczosContext(A, Q_store, W_store, ritz_errors, diagonal, subdiagonal, vec_curr, w_distance_arr, k, matrix_size)
 #end
 
 function LanczosContext(::SO, A, vec_curr, step_count)
@@ -73,15 +72,16 @@ function LanczosContext(::SO, A, vec_curr, step_count)
         matrix_size = size(A, 1)
         Q_store = Array{Float64}(undef, matrix_size, step_count)
         W_store = nothing
-        R_store = Array{Float64}(undef, step_count, step_count)
+        ritz_errors = Array{Float64}(undef, step_count)
         diagonal = Array{Float64}(undef, step_count)
         subdiagonal = Array{Float64}(undef, step_count-1)
+        copy_diagonal = similar(diagonal)
+        copy_subdiagonal = similar(subdiagonal)
         vec_prev = similar(vec_curr)
         vec_residual = similar(vec_curr)
         evec_row = zeros(matrix_size)
-        evec_row[1] = 1.0
-        LanczosContext(A, Q_store, W_store, R_store, diagonal, subdiagonal, vec_curr, vec_prev, vec_residual, evec_row,
-                        step_count, matrix_size)
+        LanczosContext(A, Q_store, W_store, ritz_errors, diagonal, subdiagonal, copy_diagonal, copy_subdiagonal,
+                        vec_curr, vec_prev, vec_residual, evec_row, step_count, matrix_size)
 end
 
 ## Dispatch to implementations
@@ -90,38 +90,26 @@ end
 
 # Lanczos with orthogonalization at every step.
 function lanczos(::FullOrth, c :: LanczosContext)
-        @assert size(c.A) == (c.matrix_size, c.matrix_size)
-        @assert size(c.vec_curr, 1)  == c.matrix_size
-        @assert size(c.diagonal, 1) == c.step_count
-        @assert size(c.diagonal, 1) - size(c.subdiagonal, 1) == 1
         @assert c.Q_store != nothing
         @assert c.W_store == nothing
 
         for j = 1:c.step_count
                 c.vec_residual .= c.A * c.vec_curr
-
                 if j > 1
                         c.vec_residual .-= c.subdiagonal[j-1] * c.vec_prev
                 end
-
                 c.diagonal[j] = c.vec_curr' * c.vec_residual
-
                 if j == c.step_count
                         break
                 end
-
                 c.vec_residual .-= c.diagonal[j] * c.vec_curr
                 c.subdiagonal[j] = sqrt(sum(c.vec_residual .* c.vec_residual))
-
                 if c.subdiagonal[j] < 2.0 * eps(Float64)
                         break
                 end
-      
                 c.Q_store[:,j] = c.vec_curr
-
                 c.vec_residual .-= @views c.Q_store[:, 1:j] * (c.Q_store[:, 1:j]' * c.vec_residual)
                 c.vec_residual .-= @views c.Q_store[:, 1:j] * (c.Q_store[:, 1:j]' * c.vec_residual)
-
                 c.vec_prev .= c.vec_curr
                 c.vec_curr .= c.vec_residual / c.subdiagonal[j]
         end
@@ -244,30 +232,31 @@ function lanczos!(::SO, c::LanczosContext)
         @assert c.W_store == nothing
         deflate = false
         for j = 1:c.step_count
-                c.vec_residual .= c.A * c.vec_curr
+                c.vec_residual .= c.A * c.vec_curr # 2 allocations
                 if j > 1
-                        c.vec_residual .-= c.subdiagonal[j-1] * c.vec_prev
+                        c.vec_residual .-= c.subdiagonal[j-1] * c.vec_prev # 2 allocations
                 end
-                c.diagonal[j] = c.vec_curr' * c.vec_residual
+                c.diagonal[j] = c.vec_curr' * c.vec_residual # 0 allocations
                 if j == c.step_count
                         break
                 end
-                c.vec_residual .-= c.diagonal[j] * c.vec_curr
-                c.subdiagonal[j] = sqrt(sum(c.vec_residual .* c.vec_residual))
+                c.vec_residual .-= c.diagonal[j] * c.vec_curr # 2 allocations
+                c.subdiagonal[j] = sqrt(sum(c.vec_residual .* c.vec_residual)) # 2 allocations
                 if c.subdiagonal[j] < 2.0*eps(Float64)
                         break
                 end
-                c.Q_store[:,j] = c.vec_curr
-                c.vec_prev .= c.vec_curr
-                c.vec_curr .= c.vec_residual / c.subdiagonal[j]
-                # do a QR and get vec_residual
-                # TODO: this area leaks memory like crazy.
+                c.Q_store[:,j] = c.vec_curr # 0 allocations
+                c.vec_prev .= c.vec_curr # 0 allocations
+                c.vec_curr .= c.vec_residual / c.subdiagonal[j] # 2 allocations
                 if j > 1
-                        evec_row_j = @view c.evec_row[1:j]
-                        # TODO: don't allocate at build time
-                        evals_j = copy(c.diagonal[1:j])
-                        subdiagonal_j = copy(c.subdiagonal[1:j-1])
-                        deflate = ritz_value_convergence_check(evals_j, subdiagonal_j, evec_row_j, j)
+                        c.copy_diagonal[1:j] .= c.diagonal[1:j] # 2 allocations
+                        c.copy_subdiagonal[1:j-1] .= c.subdiagonal[1:j-1] # 2 allocations
+                        c.evec_row[j] = 1.0 # 0 allocations
+                        deflate = ritz_value_convergence_check!(view(c.copy_diagonal, 1:j),
+                                                                view(c.copy_subdiagonal, 1:j-1),
+                                                                view(c.subdiagonal, 1:j-1),
+                                                                view(c.evec_row, 1:j)) # 15->17 allocations.
+                        @assert c.subdiagonal[1:j-1] != c.copy_subdiagonal[1:j-1]
                 end
                 if deflate
                         println("SO triggered wohooo!")
@@ -276,25 +265,16 @@ function lanczos!(::SO, c::LanczosContext)
         end
 end
 
-# store the projection as an operator.
-function ritz_value_convergence_check(diagonal::AbstractVector{Float64}, subdiagonal::AbstractVector{Float64},
-                                        evec_row::AbstractVector{Float64}, index::Integer)
-        # deflation zeros out the Lanczos tridiagonal matrix.
-        # sets [start, finish] entries in the eigenvec row to zero.
-        @assert size(evals, 1) == index
-        @assert index - size(subdiagonal, 1) == 1
-        @assert size(evec_row, 1) == index 
-        # another allocation
-        ritz_errors = copy(subdiagonal)
-        qr_tridiagonal!(diagonal, subdiagonal, evec_row)
-        println("index ", index)
-        println("evals :", diagonal)
-        println("evec_row :", evec_row .* evec_row)
-        @assert !iszero(ritz_errors) ritz_errors
-        T_j_norm = maximum(abs.(evals))
-        ritz_errors .= abs.(evec_row[1:index-1] .* ritz_errors)
+function ritz_value_convergence_check!(copy_diagonal::SubArray{Float64}, copy_subdiagonal::SubArray{Float64},
+                                        subdiagonal::SubArray{Float64}, evec_row::SubArray{Float64})
+        qr_tridiagonal!(copy_diagonal, copy_subdiagonal, evec_row)
+        Tj_norm = maximum(abs.(copy_diagonal))
+        # copy_subdiagonal is now all zeros.
+        ritz_errors = copy_subdiagonal
+        ritz_errors .= abs.(@view(evec_row[1:end-1]) .* subdiagonal)
+        evec_row .= zeros(size(evec_row,1))
         for e in ritz_errors
-                if e < sqrt(eps(Float64)) * T_j_norm
+                if e < sqrt(eps(Float64)) * Tj_norm
                         return true
                 end
         end
@@ -309,7 +289,7 @@ end
 #        b = get_subdiagonal(context, j)
 #        for i = 1:j
 #                evec_row = qr_tridiagonal!(copy(a[1:i]), copy(b[1:i]), j)
-#                R = get_R_store(context, i)
+#                R = get_ritz_errors(context, i)
 #                R .= abs.(evec_row) .* b[1:i] 
 #        end
 #end

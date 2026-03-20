@@ -7,20 +7,20 @@ struct FirstOrth <: OrthStrategy end
 struct SO <: OrthStrategy end
 
 struct LanczosContext
-	A                       :: Matrix{Float64}
-	Q_store                 :: Union{Matrix{Float64}, Nothing}
-	W_store                 :: Union{Matrix{Float64}, Nothing}
-	ritz_errors             :: Vector{Float64} 
-	diagonal                :: Vector{Float64}
-	subdiagonal             :: Vector{Float64}
+        A                       :: Matrix{Float64}
+        Q_store                 :: Union{Matrix{Float64}, Nothing}
+        W_store                 :: Union{Matrix{Float64}, Nothing}
+        ritz_errors             :: Vector{Float64} 
+        diagonal                :: Vector{Float64}
+        subdiagonal             :: Vector{Float64}
         copy_diagonal           :: Vector{Float64}
-	copy_subdiagonal        :: Vector{Float64}
-	vec_curr                :: Vector{Float64}
+        copy_subdiagonal        :: Vector{Float64}
+        vec_curr                :: Vector{Float64}
         vec_prev                :: Vector{Float64}
         vec_residual            :: Vector{Float64} # I think we can get rid of this(?)
         evec_row                :: Vector{Float64}
-	step_count              :: Int64
-	matrix_size             :: Int64
+        step_count              :: Int64
+        matrix_size             :: Int64
 end
 
 #function LanczosContext(::FullOrth, A::AbstractMatrix, vec_curr::AbstractVector, step_count::Int64)
@@ -67,7 +67,7 @@ end
 #        LanczosContext(A, Q_store, W_store, ritz_errors, diagonal, subdiagonal, vec_curr, w_distance_arr, k, matrix_size)
 #end
 
-function LanczosContext(::SO, A, vec_curr, step_count)
+function LanczosContext(::SO, A::AbstractMatrix{Float64}, vec_curr::AbstractVector{Float64}, step_count::Int64)
         @assert sum(vec_curr .* vec_curr) ≈ 1.0 "pass a unit vec."
         matrix_size = size(A, 1)
         Q_store = Array{Float64}(undef, matrix_size, step_count)

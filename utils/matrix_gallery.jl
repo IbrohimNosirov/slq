@@ -1,11 +1,10 @@
 using LinearAlgebra
 using Random
-
 Random.seed!(3)
 
 # Utility functions should not allocate any memory.
-function make_kronecker_quasirandom!(vec_random::AbstractVector{Float64}, start=0)
-        points_count = size(vec_random, 1)
+function make_kronecker_quasirand!(vec_rand::AbstractVector{Float64}, start=0)
+        points_count = size(vec_rand, 1)
         d = 1
         φ = 1.0 + 1.0/d
         for k = 1:10
@@ -15,7 +14,7 @@ function make_kronecker_quasirandom!(vec_random::AbstractVector{Float64}, start=
         end
         αs = [mod(1.0/φ^j, 1.0) for j = 1:d]
         for j = 1:points_count
-                vec_random[j] = mod(0.5 + (start+j)*αs[d], 1.0)
+                vec_rand[j] = mod(0.5 + (start+j)*αs[d], 1.0)
         end
 end
 
@@ -31,37 +30,36 @@ function reduce_tridiag!(A::AbstractMatrix)
         end
 end
 
-# diagonal, not diag, because diag() is a Julia function.
-function tridiag_params!(A, diagonal, subdiagonal)
-        count = size(subdiagonal, 1)
-        @assert size(diagonal, 1) - count == 1
+# diag, not diag, because diag() is a Julia function.
+function tridiag_params!(A, diag, subdiag)
+        count = size(subdiag, 1)
+        @assert size(diag, 1) - count == 1
         for i = 1:count
-                diagonal[i] = A[i,i]
-                subdiagonal[i] = A[i+1,i]
+                diag[i] = A[i,i]
+                subdiag[i] = A[i+1,i]
         end
-        diagonal[count+1] = A[count+1, count+1]
+        diag[count+1] = A[count+1, count+1]
 end
 
 # make_matrix! creates a dense matrix with the same eigenvalues as the input
 # 'evals'. This is done using ten Householder reflectors.
-function make_matrix!(A::AbstractMatrix{Float64}, vec_random::AbstractVector{Float64}, evals::AbstractVector{Float64})
-        H = I - 2*vec_random*vec_random'./(vec_random'*vec_random)
+function make_matrix!(A::AbstractMatrix{Float64}, vec_rand::AbstractVector{Float64}, evals::AbstractVector{Float64})
+        H = I - 2*vec_rand*vec_rand'./(vec_rand'*vec_rand)
         A .= H * diagm(evals) * H'
         for i = 1:10
-                make_kronecker_quasirandom!(vec_random)
-                H .= I - 2*vec_random*vec_random'./(vec_random'*vec_random)
+                make_kronecker_quasirand!(vec_rand)
+                H .= I - 2*vec_rand*vec_rand'./(vec_rand'*vec_rand)
                 A .= H * A * H'
         end
 end
 
-function make_tridiag_matrix(A::AbstractMatrix{Float64}, vec_random::AbstractVector{Float64},
+function make_tridiag_matrix(A::AbstractMatrix{Float64}, vec_rand::AbstractVector{Float64},
                                 evals::AbstractVector{Float64})
         A = make_matrix!(A, evals)
         reduce_tridiag!(A)
-        diagonal = diag(A)
-        subdiagonal = diag(A, -1)
-
-        diagonal, subdiagonal
+        diag = diag(A)
+        subdiag = diag(A, -1)
+        diag, subdiag
 end
 
 struct Interval
@@ -73,18 +71,15 @@ function Interval(start::Float64, finish::Float64)
         @assert start  > 0
         @assert finish > 0 
         @assert finish - start >= 0
-
         Interval(start, finish)
 end
 
 function make_functional_decay!(evals::AbstractVector, interval::Interval, fun::Function)
         evals_count = size(evals, 1)
         @assert evals_count > 3
-
         interval_range = interval.finish - interval.start
         evals .= collect(range(0, evals_count-1)) ./ evals_count .* interval_range .+ interval.start
         evals .= fun.(evals) .+ 2*sqrt(eps(Float64))*rand(evals_count)
-
         sort!(evals)
 end
 
@@ -92,12 +87,10 @@ function make_cluster!(evals::AbstractVector, interval::Interval, epsilon::Float
         evals_count = size(evals, 1)
         @assert evals_count > 0
         @assert epsilon > 1e-8
-
         seed = evals_count * 42
         interval_range = interval.finish - interval.start
-        make_kronecker_quasirandom!(evals)
+        make_kronecker_quasirand!(evals)
         evals .= epsilon .* evals ./ interval_range .+ interval.start
-
         sort!(evals)
 end
 

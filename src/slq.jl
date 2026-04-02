@@ -2,13 +2,18 @@ include("lanczos.jl")
 include("../utils/matrix_gallery.jl")
 using Base.Threads
 
-#= This struct handles the high-level memory allocation bookkeeping.
+#= This struct handles all memory allocation and bookkeeping for the algorithm.
+Any further allocation should be deemed a bug.
+The number of selective orthogonalization steps should vary depending on the matrix spectrum,
+but is capped by the memory budget.
+That is, each deflation operation forces us to store the last k vectors and the
+next restarted iteration works in a smaller space of size (problem dimension)-(subspace dimension).
+We can keep deflating until subspace dim == memory_budget.
 Monte-Carlo trial count should be large enough for CLT to kick in; here it's set to 200.
-The number of Lanczos steps should be set based on the compute budget available after SO.
-Need a proof that it's always better to do selective orthogonalization vs MC as long as I'm
-under the memory budget.
-but if I run out of memory budget when monte carlo doesn't converge, the MC is useless too?
-Shared memory is going to look different than multiple GPU parallelism.
+The number of Lanczos steps should be set based on the compute budget
+available, as measured in matvecs, after selective orthogonalization.
+As it is billed as a sublinear-time algorithm, this implementation has a hard cap of matvecs;
+they can't be larger than problem_dimension.
 =#
 struct SLQ_Context
         problem_dim   ::Int64

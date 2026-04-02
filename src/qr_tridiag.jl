@@ -5,7 +5,7 @@ const eval_itr_max = 30
 # TODO: add guards against very large inputs.
 
 function qr_tridiag!(diag::AbstractVector{Float64}, subdiag::AbstractVector{Float64}, evec_row::AbstractVector{Float64})
-        @assert length(findall(!iszero, evec_row)) == 1 length(findall(!iszero, evec_row)), evec_row
+        @assert length(findall(!iszero, evec_row)) == 1
         diag_n = size(diag, 1)
         subdiag_n = size(subdiag, 1)
         @assert diag_n - subdiag_n == 1

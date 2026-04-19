@@ -78,7 +78,7 @@ function make_functional_decay!(evals::AbstractVector, interval::Interval, fun::
         evals_count = size(evals, 1)
         @assert evals_count > 3
         interval_range = interval.finish - interval.start
-        evals .= collect(range(0, evals_count-1)) ./ evals_count .* interval_range .+ interval.start
+        evals .= collect(range(0, evals_count-1))./evals_count.*interval_range .+ interval.start
         evals .= fun.(evals) .+ 2*sqrt(eps(Float64))*rand(evals_count)
         sort!(evals)
 end

@@ -1,204 +1,278 @@
 include("qr_tridiag.jl")
 abstract type LanczosContext end
 
-# TODO: finish and test subspace dim logic.
-struct DeflatedSubspace
-        Q_store::AbstractMatrix{Float64}
-        work1  ::AbstractVector{Float64}
-        work2  ::AbstractVector{Float64}
-        work3  ::AbstractVector{Float64}
-        work4  ::AbstractVector{Float64}
-        dim    ::Int64
+# beautiful idea: source -> target where source (A, input vector) -> (diagonal, evec_row)
+# things to keep in mind:
+        # assertions
+# tips from David chat:
+# for performance, structs should be annotated with concrete types.
+
+#struct LanczosContext{V <: AbstractVector{Float64}}
+#        diagonal::V
+#        subdiagonal::V
+#        evec_row::V
+#end
+
+struct DeflatedSubspace{M<:AbstractMatrix{Float64}, V<:AbstractVector{Float64}}
+        storage::M
+        work1  ::V
+        work2  ::V
+        work3  ::V
+        work4  ::V
+        dim    ::Int64 #dimension of the subspace; starts at 0
+        budget ::Int64
 end
 
-function DeflatedSubspace(problem_dim::Int64, memory_budget::Int64)
-        Q_store = Array{Float64}(undef, problem_dim, memory_budget)
-        work1 = Array{Float64}(undef, problem_dim)
-        work2 = Array{Float64}(undef, problem_dim)
-        work3 = Array{Float64}(undef, problem_dim)
-        work4 = Array{Float64}(undef, problem_dim)
-        dim = 1
-        DeflatedSubspace(Q_store, work1, work2, work3, work4, dim)
+function DeflatedSubspace(problem_dim::T, budget::T) where {T <: Int64}
+        storage = Array{Float64}(undef, problem_dim, budget)
+        work1   = Array{Float64}(undef, budget)
+        work2   = Array{Float64}(undef, problem_dim)
+        work3   = Array{Float64}(undef, problem_dim)
+        work4   = Array{Float64}(undef, problem_dim)
+        DeflatedSubspace(storage, work1, work2, work3, work4, 0, budget)
 end
 
-struct FullOrthogonalization <: LanczosContext
-        Q_store   ::Matrix{Float64}
-        diag      ::Vector{Float64}
-        subdiag   ::Vector{Float64}
-        vec_curr  ::Vector{Float64}
-        vec_prev  ::Vector{Float64}
-        vec_work  ::Vector{Float64}
-        step_count::Int64
+function DeflatedSubspace(s::DeflatedSubspace, dim::Int64)
+        snew = DeflatedSubspace(s.storage, s.work1, s.work2, s.work3, s.work4, dim, s.budget)
+        snew
 end
 
-function FullOrthogonalization(vec_curr::AbstractVector{Float64}, step_count::Int64)
-        @assert sum(vec_curr .* vec_curr) ≈ 1.0 "pass a unit vec."
-        problem_dim = size(vec_curr, 1)
-        Q_store = Array{Float64}(undef, problem_dim, step_count)
-        diag = Array{Float64}(undef, step_count)
-        subdiag = Array{Float64}(undef, step_count-1)
-        vec_prev = similar(vec_curr)
-        vec_work = similar(vec_curr)
-        FullOrthogonalization(Q_store, diag, subdiag, vec_curr, vec_prev, vec_work, step_count)
+function get_Q(s::DeflatedSubspace)
+        vec_count = size(s.storage,2)
+        @assert s.dim < vec_count
+        @view s.storage[:, s.dim+1:vec_count]
+end
+
+function get_work_small(s::DeflatedSubspace)
+        vec_count  = size(s.storage,2)
+        @assert s.dim > 0
+        @assert s.dim <= vec_count
+        @view s.work1[1:s.dim]
+end
+
+function get_ritz_vecs(s::DeflatedSubspace)
+        vec_count = size(s.storage,2)
+        @assert s.dim > 0
+        @assert s.dim <= vec_count
+        @view s.storage[:, 1:s.dim]
+end
+
+function set_ritz_vecs(s::DeflatedSubspace, ritz_vecs::AbstractMatrix{Float64})
+        ritz_count = size(ritz_vecs, 2)
+        Q = get_Q(s)
+        Q_count = size(Q,2)
+        @assert ritz_count <= Q_count
+        copyto!(view(Q, :, 1:ritz_count), ritz_vecs)
+        # should be able to make with no allocations.
+        snew = DeflatedSubspace(s, s.dim+ritz_count)
+        snew
+end
+
+struct FullOrthogonalization{V <: AbstractVector{Float64}} <: LanczosContext
+        diagonal   ::V
+        subdiagonal::V
+        curr       ::V
+        prev       ::V
+        work       ::V
+        step_count ::Int64
+end
+
+function FullOrthogonalization(curr::AbstractVector{Float64}, step_count::Int64)
+        problem_dim = size(curr, 1)
+        @assert step_count <= problem_dim "step count can't be larger than problem dimension."
+        @assert sum(curr .* curr) ≈ 1.0 "pass a unit vec."
+        diagonal = Array{Float64}(undef, step_count)
+        subdiagonal = Array{Float64}(undef, step_count-1)
+        prev = similar(curr)
+        work = similar(curr)
+        FullOrthogonalization(diagonal, subdiagonal, curr, prev, work, step_count)
 end
 
 # Lanczos with orthogonalization at every step.
-function lanczos!(A::AbstractMatrix{Float64}, c::FullOrthogonalization)
-        @assert c.Q_store != nothing
+function lanczos!(A::AbstractMatrix{Float64}, c::FullOrthogonalization, s::DeflatedSubspace)
+        Q = get_Q(s)
         for j = 1:c.step_count
-                c.vec_work .= A * c.vec_curr
+                mul!(c.work, A, c.curr)
                 if j > 1
-                        c.vec_work .-= c.subdiag[j-1] * c.vec_prev
+                        c.work .-= c.subdiagonal[j-1] * c.prev
                 end
-                c.diag[j] = c.vec_curr' * c.vec_work
+                c.diagonal[j] = c.curr' * c.work
                 if j == c.step_count
                         break
                 end
-                c.vec_work .-= c.diag[j] * c.vec_curr
-                c.subdiag[j] = sqrt(sum(c.vec_work .* c.vec_work))
-                if c.subdiag[j] < 2.0 * eps(Float64)
+                c.work .-= c.diagonal[j] * c.curr
+                c.subdiagonal[j] = sqrt(sum(c.work .* c.work))
+                if c.subdiagonal[j] < 2.0 * eps(Float64)
                         break
                 end
-                c.Q_store[:,j] = c.vec_curr
-                c.vec_work .-= @views c.Q_store[:, 1:j] * (c.Q_store[:, 1:j]' * c.vec_work)
-                c.vec_work .-= @views c.Q_store[:, 1:j] * (c.Q_store[:, 1:j]' * c.vec_work)
-                c.vec_prev .= c.vec_curr
-                c.vec_curr .= c.vec_work / c.subdiag[j]
+                Q[:,j] = c.curr
+                if j > 1
+                        c.work .-= @views Q[:, 1:j-1] * (Q[:, 1:j-1]' * c.work)
+                        c.work .-= @views Q[:, 1:j-1] * (Q[:, 1:j-1]' * c.work)
+                end
+                c.prev .= c.curr
+                c.curr .= c.work / c.subdiagonal[j]
         end
 end
 
-struct NoOrthogonalization <: LanczosContext
-        diag      ::Vector{Float64}
-        subdiag   ::Vector{Float64}
-        vec_curr  ::Vector{Float64}
-        vec_prev  ::Vector{Float64}
-        vec_work  ::Vector{Float64}
-        step_count::Int64
+struct NoOrthogonalization{V<:Vector{Float64}} <: LanczosContext
+        diagonal   ::V
+        subdiagonal::V
+        curr       ::V
+        prev       ::V
+        work       ::V
+        step_count ::Int64
 end
 
-function NoOrthogonalization(vec_curr::AbstractVector{Float64}, step_count::Int64)
-        @assert sum(vec_curr .* vec_curr) ≈ 1.0 "pass a unit vec."
-        diag = Array{Float64}(undef, step_count)
-        subdiag = Array{Float64}(undef, step_count-1)
-        vec_prev = similar(vec_curr)
-        vec_work = similar(vec_curr)
-        NoOrthogonalization(diag, subdiag, vec_curr, vec_prev, vec_work, step_count)
+function NoOrthogonalization(curr::AbstractVector{Float64}, step_count::Int64)
+        @assert sum(curr .* curr) ≈ 1.0 "pass a unit vec."
+        diagonal = Array{Float64}(undef, step_count)
+        subdiagonal = Array{Float64}(undef, step_count-1)
+        prev = similar(curr)
+        work = similar(curr)
+        NoOrthogonalization(diagonal, subdiagonal, curr, prev, work, step_count)
 end
 
 function lanczos!(A::AbstractMatrix{Float64}, c::NoOrthogonalization, s::DeflatedSubspace)
         for j = 1:c.step_count
-                mul_subspace!(s, A, c.vec_curr, c.vec_work)
+                mul_subspace!(c.work, A, c.curr, s)
                 if j > 1
-                        c.vec_work .-= c.subdiag[j-1] * c.vec_prev
+                        c.work .-= c.subdiagonal[j-1] * c.prev
                 end
-                c.diag[j] = c.vec_curr' * c.vec_work
+                c.diagonal[j] = c.curr' * c.work
                 if j == c.step_count
                         break
                 end
-                c.vec_work .-= c.diag[j] * c.vec_curr
-                c.subdiag[j] = sqrt(sum(c.vec_work .* c.vec_work))
-                if c.subdiag[j] < 2.0 * eps(Float64)
+                c.work .-= c.diagonal[j] * c.curr
+                c.subdiagonal[j] = sqrt(sum(c.work .* c.work))
+                if c.subdiagonal[j] < 2.0 * eps(Float64)
                         break
                 end
-                c.vec_prev .= c.vec_curr
-                c.vec_curr .= c.vec_work / c.subdiag[j]
+                c.prev .= c.curr
+                c.curr .= c.work / c.subdiagonal[j]
         end
 end
 
-struct SelectiveOrthogonalization <: LanczosContext
-        ritz_errors ::Vector{Float64}
-        diag        ::Vector{Float64}
-        subdiag     ::Vector{Float64}
-        copy_diag   ::Vector{Float64}
-        copy_subdiag::Vector{Float64}
-        vec_curr    ::Vector{Float64}
-        vec_prev    ::Vector{Float64}
-        vec_work    ::Vector{Float64}
-        evec_row    ::Vector{Float64}
-        step_count  ::Int64
+struct SelectiveOrthogonalization{V<:Vector{Float64}} <: LanczosContext
+        ritz_errors     ::V
+        diagonal        ::V
+        subdiagonal     ::V
+        copy_diagonal   ::V
+        copy_subdiagonal::V
+        curr            ::V
+        prev            ::V
+        work            ::V
+        evec_row        ::V
 end
 
-function SelectiveOrthogonalization(vec_curr::AbstractVector{Float64}, step_count::Int64)
-        @assert sum(vec_curr .* vec_curr) ≈ 1.0 "pass a unit vec."
-        problem_dim = size(vec_curr, 1)
-        ritz_errors = Array{Float64}(undef, step_count)
-        diag = Array{Float64}(undef, step_count)
-        subdiag = Array{Float64}(undef, step_count-1)
-        copy_diag = similar(diag)
-        copy_subdiag = similar(subdiag)
-        vec_prev = similar(vec_curr)
-        vec_work = similar(vec_curr)
-        evec_row = zeros(step_count)
-        SelectiveOrthogonalization(ritz_errors, diag, subdiag, copy_diag, copy_subdiag, vec_curr, vec_prev, vec_work, evec_row, step_count)
+function SelectiveOrthogonalization(curr::AbstractVector{Float64}, budget::Int64)
+        @assert sum(curr .* curr) ≈ 1.0 "pass a unit vec."
+        ritz_errors = Array{Float64}(undef, budget)
+        diagonal = Array{Float64}(undef, budget)
+        subdiagonal = Array{Float64}(undef, budget-1)
+        copy_diagonal = similar(diagonal)
+        copy_subdiagonal = similar(subdiagonal)
+        prev = similar(curr)
+        work = similar(curr)
+        evec_row = zeros(budget)
+        SelectiveOrthogonalization(ritz_errors, diagonal, subdiagonal, copy_diagonal, copy_subdiagonal, curr, prev, work, evec_row)
+end
+
+function get_diagonal(c::SelectiveOrthogonalization, s::DeflatedSubspace)
+        @view c.diagonal[1+s.dim:end]
+end
+
+function get_subdiagonal(c::SelectiveOrthogonalization, s::DeflatedSubspace)
+        @view c.subdiagonal[1+s.dim:end]
+end
+
+function get_evec_row(c::SelectiveOrthogonalization, s::DeflatedSubspace)
+        @view c.evec_row[1+s.dim:end]
 end
 
 # Lanczos with selective orthogonalization.
 function lanczos!(A::AbstractMatrix{Float64}, c::SelectiveOrthogonalization, s::DeflatedSubspace)
-        deflate = false
-        @assert c.step_count - s.dim > 0
-        for j = s.dim:c.step_count
-                mul_subspace!(s, A, c.vec_curr, c.vec_work)
-                if j > s.dim
-                        c.vec_work .-= c.subdiag[j-1] * c.vec_prev
+        deflation = false
+        step_count = s.budget - s.dim
+        Q = get_Q(s)
+        diagonal = get_diagonal(c, s)
+        subdiagonal = get_subdiagonal(c, s)
+        evec_row = get_evec_row(c, s)
+        converged_indices = []
+        for j = 1:step_count
+                mul!(c.work, A, c.curr)
+                if j > 1
+                        c.work .-= subdiagonal[j-1] * c.prev
                 end
-                c.diag[j] = c.vec_curr' * c.vec_work
-                if j == c.step_count
+                diagonal[j] = c.curr' * c.work
+                if j == step_count
                         break
                 end
-                c.vec_work .-= c.diag[j] * c.vec_curr
-                c.subdiag[j] = sqrt(sum(c.vec_work .* c.vec_work))
-                if c.subdiag[j] < 2.0*eps(Float64)
+                c.work .-= diagonal[j] * c.curr
+                subdiagonal[j] = sqrt(sum(c.work .* c.work))
+                if subdiagonal[j] < 2.0*eps(Float64)
                         break
                 end
-                s.Q_store[:,s.dim] = c.vec_curr
-                c.vec_prev .= c.vec_curr
-                c.vec_curr .= c.vec_work / c.subdiag[j]
-                if j > s.dim
-                        c.copy_diag[s.dim:j] .= c.diag[s.dim:j]
-                        c.copy_subdiag[s.dim:j-1] .= c.subdiag[s.dim:j-1]
+                Q[:,j] .= c.curr
+                if j > 1
+                        # selective orthogonalization check.
+                        @views c.copy_diagonal[1:j] .= diagonal[1:j]
+                        @views c.copy_subdiagonal[1:j-1] .= subdiagonal[1:j-1]
+                        fill!(view(c.evec_row, 1:j), 0.0)
                         c.evec_row[j] = 1.0
-                        deflate = convergence_check!(view(c.copy_diag, s.dim:j), view(c.copy_subdiag, s.dim:j-1),
-                                                        view(c.subdiag, s.dim:j-1), view(c.evec_row, s.dim:j))
-                        @assert c.subdiag[s.dim:j-1] != c.copy_subdiag[s.dim:j-1]
+
+                        @views qr_tridiag!(c.copy_diagonal[1:j], c.copy_subdiagonal[1:j-1], c.evec_row[1:j])
+
+                        # c.copy_diagonal[1:j] now has evalues.
+                        @assert subdiagonal[1:j-1] != c.copy_subdiagonal[1:j-1]
+                        @views Tj_norm = maximum(abs.(c.copy_diagonal[1:j]))
+                        @views c.ritz_errors[1:j-1] .= abs.(c.evec_row[1:j-1] .* subdiagonal[1:j-1])
+                        converged_indices = findall(<(sqrt(eps(Float64))*Tj_norm),abs.(c.ritz_errors[1:j-1]))
                 end
-                if deflate
-                        diag, evecs = eigen!(SymTridiag(diag, subdiag))
-                        view(s.Q, s.dim:s.dim+j) .*= evecs
-                        s.dim = j
-                        break
+                if !isempty(converged_indices)
+                        deflation_dim = size(converged_indices,1)
+                        evals, evecs = eigen!(SymTridiagonal(view(diagonal, 1:j), view(subdiagonal,1:j-1)))
+                        #slightly complicated; example: indices = [0,1,0,1] -> diagonal[1,2] .= diagonal[2,4]
+                        @views diagonal[1:deflation_dim] .= evals[converged_indices]
+                        @views Q[:, 1:j] .= Q[:, 1:j] * evecs[1:j]
+                        @views Q[:, 1:deflation_dim] .= Q[:, converged_indices]
+                        snew = DeflatedSubspace(s, s.dim + deflation_dim)
+                        ritz_vecs = get_ritz_vecs(snew)
+                        # purge via deflation?
+                        mul_subspace!(c.work, A, c.curr, snew)
+                        c.curr .= c.work
+                        #c.curr .-= @views ritz_vecs * (ritz_vecs' * c.curr)
+                        #c.curr .-= @views ritz_vecs * (ritz_vecs' * c.curr)
+                        deflation = true
+                        return snew, deflation
                 end
+                c.prev .= c.curr
+                c.curr .= c.work / subdiagonal[j]
         end
-        return deflate
+        s, deflation
 end
 
-# Check if a lanczos estimate has converged to a Ritz value. SubArray is here because I should only be allowed to pass in views.
-function convergence_check!(copy_diag::SubArray{Float64}, copy_subdiag::SubArray{Float64}, subdiag::SubArray{Float64}, evec_row::SubArray{Float64})
-        qr_tridiag!(copy_diag, copy_subdiag, evec_row)
-        Tj_norm = maximum(abs.(copy_diag))
-        # copy_subdiag is now all zeros.
-        ritz_errors = copy_subdiag
-        ritz_errors .= abs.(@view(evec_row[1:end-1]) .* subdiag)
-        evec_row .= zeros(size(evec_row,1))
-        for e in ritz_errors
-                if e < sqrt(eps(Float64)) * Tj_norm
-                        return true
-                end
-        end
-        return false
-end
-
-# TODO: check this
-function mul_subspace!(s::DeflatedSubspace, A::AbstractMatrix{Float64}, source::AbstractVector{Float64}, target::AbstractVector{Float64})
-        s.work1 .= A * source
-        if s.dim == 1
-                target = s.work1
+# correctly does target = (I - QQ')A(I - QQ')*source; don't alias target and source.
+function mul_subspace!(target::StridedVector{Float64}, A::AbstractMatrix{Float64}, source::StridedVector{Float64}, s::DeflatedSubspace)
+        if s.dim == 0
+                mul!(target, A, source)
         else
-                Q = view(s.Q, 1:s.dim)
-                s.work2 .= copy(source)
-                s.work2 .= Q * (Q' * s.work_1)
-                s.work3 .= A * (Q * (Q' * source))
-                s.work4 .= copy(s.work3)
-                s.work4 .= Q * (Q' * s.work4)
-                target .= s.work1 - s.work2 - s.work3 + s.work4
+                Q = get_ritz_vecs(s)
+                Qt = Q'
+                work_small = get_work_small(s)
+                # s.work3 = (I - QQ')*source
+                mul!(work_small, Qt, source)
+                mul!(s.work2, Q, work_small)
+                # s.work3 = source - s.work2
+                copyto!(s.work3, source)
+                axpy!(-1.0, s.work2, s.work3)
+                # s.work4 = A(I - QQ')*source
+                mul!(s.work4, A, s.work3)
+                # target = (I - QQ')A(I - QQ')*source
+                mul!(work_small, Qt, s.work4)
+                mul!(s.work2, Q, work_small)
+                #target .= s.work4 .- s.work2
+                copyto!(target, s.work4)
+                axpy!(-1.0, s.work2, target)
         end
 end

@@ -1,18 +1,6 @@
 include("qr_tridiag.jl")
 abstract type LanczosContext end
 
-# beautiful idea: source -> target where source (A, input vector) -> (diagonal, evec_row)
-# things to keep in mind:
-        # assertions
-# tips from David chat:
-# for performance, structs should be annotated with concrete types.
-
-#struct LanczosContext{V <: AbstractVector{Float64}}
-#        diagonal::V
-#        subdiagonal::V
-#        evec_row::V
-#end
-
 struct DeflatedSubspace{M<:AbstractMatrix{Float64}, V<:AbstractVector{Float64}}
         storage::M
         work1  ::V
@@ -178,16 +166,28 @@ function SelectiveOrthogonalization(curr::AbstractVector{Float64}, budget::Int64
         SelectiveOrthogonalization(ritz_errors, diagonal, subdiagonal, copy_diagonal, copy_subdiagonal, curr, prev, work, evec_row)
 end
 
-function get_diagonal(c::SelectiveOrthogonalization, s::DeflatedSubspace)
-        @view c.diagonal[1+s.dim:end]
+function get_diagonal(c::SelectiveOrthogonalization, s::DeflatedSubspace, j::Int64)
+        offset = s.dim
+        @assert offset + j <= s.budget
+        @view c.diagonal[offset+1:offset+j]
 end
 
-function get_subdiagonal(c::SelectiveOrthogonalization, s::DeflatedSubspace)
-        @view c.subdiagonal[1+s.dim:end]
+function get_subdiagonal(c::SelectiveOrthogonalization, s::DeflatedSubspace, j::Int64)
+        offset = s.dim
+        @assert offset + j <= s.budget
+        @view c.subdiagonal[offset+1:offset+j]
 end
 
-function get_evec_row(c::SelectiveOrthogonalization, s::DeflatedSubspace)
-        @view c.evec_row[1+s.dim:end]
+function get_evec_row(c::SelectiveOrthogonalization, s::DeflatedSubspace, j::Int64)
+        offset = s.dim
+        @assert offset + j <= s.budget
+        @view c.evec_row[offset+1:offset+j]
+end
+
+function get_ritz_errors(c::SelectiveOrthogonalization, s::DeflatedSubspace, j::Int64)
+        offset = s.dim
+        @assert offset + j <= s.budget
+        @view c.ritz_errors[offset+1:offset+j]
 end
 
 # Lanczos with selective orthogonalization.
@@ -195,65 +195,63 @@ function lanczos!(A::AbstractMatrix{Float64}, c::SelectiveOrthogonalization, s::
         deflation = false
         step_count = s.budget - s.dim
         Q = get_Q(s)
-        diagonal = get_diagonal(c, s)
-        subdiagonal = get_subdiagonal(c, s)
-        evec_row = get_evec_row(c, s)
         converged_indices = []
+        @assert sum(c.curr .* c.curr) ≈ 1.0 "pass a unit vector."
         for j = 1:step_count
-                mul!(c.work, A, c.curr)
+                diagonal = get_diagonal(c, s, j)
+                evec_row = get_evec_row(c, s, j)
+                mul_subspace!(c.work, A, c.curr, s)
                 if j > 1
+                        subdiagonal = get_subdiagonal(c, s, j-1)
+                        ritz_errors = get_ritz_errors(c, s, j-1)
                         c.work .-= subdiagonal[j-1] * c.prev
                 end
                 diagonal[j] = c.curr' * c.work
                 if j == step_count
                         break
                 end
+                Q[:,j] .= c.curr
                 c.work .-= diagonal[j] * c.curr
+                subdiagonal = get_subdiagonal(c, s, j)
                 subdiagonal[j] = sqrt(sum(c.work .* c.work))
                 if subdiagonal[j] < 2.0*eps(Float64)
                         break
                 end
-                Q[:,j] .= c.curr
+                c.prev .= c.curr
+                c.curr .= c.work / subdiagonal[j]
+                subdiagonal = get_subdiagonal(c, s, j-1)
                 if j > 1
                         # selective orthogonalization check.
-                        @views c.copy_diagonal[1:j] .= diagonal[1:j]
-                        @views c.copy_subdiagonal[1:j-1] .= subdiagonal[1:j-1]
-                        fill!(view(c.evec_row, 1:j), 0.0)
-                        c.evec_row[j] = 1.0
-
-                        @views qr_tridiag!(c.copy_diagonal[1:j], c.copy_subdiagonal[1:j-1], c.evec_row[1:j])
-
-                        # c.copy_diagonal[1:j] now has evalues.
-                        @assert subdiagonal[1:j-1] != c.copy_subdiagonal[1:j-1]
-                        @views Tj_norm = maximum(abs.(c.copy_diagonal[1:j]))
-                        @views c.ritz_errors[1:j-1] .= abs.(c.evec_row[1:j-1] .* subdiagonal[1:j-1])
-                        converged_indices = findall(<(sqrt(eps(Float64))*Tj_norm),abs.(c.ritz_errors[1:j-1]))
+                        copy_diagonal = @view c.copy_diagonal[1:j]
+                        copy_subdiagonal = @view c.copy_subdiagonal[1:j-1]
+                        copyto!(copy_diagonal, diagonal)
+                        copyto!(copy_subdiagonal, subdiagonal)
+                        fill!(evec_row, 0.0)
+                        evec_row[j] = 1.0
+                        qr_tridiag!(copy_diagonal, copy_subdiagonal, evec_row)
+                        Tj_norm = maximum(abs.(copy_diagonal))
+                        @views ritz_errors .= abs.(evec_row[1:j-1] .* subdiagonal)
+                        converged_indices = findall(<(sqrt(eps(Float64))*Tj_norm),abs.(ritz_errors))
                 end
                 if !isempty(converged_indices)
                         deflation_dim = size(converged_indices,1)
-                        evals, evecs = eigen!(SymTridiagonal(view(diagonal, 1:j), view(subdiagonal,1:j-1)))
+                        evals, evecs = eigen!(SymTridiagonal(diagonal, subdiagonal))
                         #slightly complicated; example: indices = [0,1,0,1] -> diagonal[1,2] .= diagonal[2,4]
                         @views diagonal[1:deflation_dim] .= evals[converged_indices]
+                        @views evec_row[1:deflation_dim] .= evecs[1, converged_indices] # first row index.
                         @views Q[:, 1:j] .= Q[:, 1:j] * evecs[1:j]
                         @views Q[:, 1:deflation_dim] .= Q[:, converged_indices]
                         snew = DeflatedSubspace(s, s.dim + deflation_dim)
-                        ritz_vecs = get_ritz_vecs(snew)
-                        # purge via deflation?
-                        mul_subspace!(c.work, A, c.curr, snew)
-                        c.curr .= c.work
-                        #c.curr .-= @views ritz_vecs * (ritz_vecs' * c.curr)
-                        #c.curr .-= @views ritz_vecs * (ritz_vecs' * c.curr)
                         deflation = true
                         return snew, deflation
                 end
-                c.prev .= c.curr
-                c.curr .= c.work / subdiagonal[j]
         end
         s, deflation
 end
 
 # correctly does target = (I - QQ')A(I - QQ')*source; don't alias target and source.
-function mul_subspace!(target::StridedVector{Float64}, A::AbstractMatrix{Float64}, source::StridedVector{Float64}, s::DeflatedSubspace)
+function mul_subspace!(target::StridedVector{Float64}, A::AbstractMatrix{Float64}, source::StridedVector{Float64},
+                        s::DeflatedSubspace)
         if s.dim == 0
                 mul!(target, A, source)
         else

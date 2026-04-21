@@ -5,6 +5,7 @@ include("../utils/matrix_gallery.jl")
 
 # Lanczos full orthogonalization.
 let
+        println("full orthogonalization")
         evals_count = 10
         evals_true = Array{Float64}(undef, evals_count)
         make_functional_decay!(evals_true, Interval(0.95, 1), matern_1_2)
@@ -27,15 +28,14 @@ end
 
 # mul_subspace test.
 let
+        println("mul_subspace test.")
         # for loop that tests all numbers and all budgets.
-        Random.seed!(42)
         evals_count = 10
         subspace_dim = 1
         budget = 5
         evals_true = Array{Float64}(undef, evals_count)
         make_functional_decay!(evals_true, Interval(0.95, 1), matern_1_2)
-        vec_rand = Array{Float64}(undef, evals_count)
-        make_kronecker_quasirand!(vec_rand)
+        vec_rand = randn(evals_count)
         vec_rand /= sqrt(sum(vec_rand .* vec_rand))
         A = Array{Float64}(undef, evals_count, evals_count)
         make_matrix!(A, vec_rand, evals_true)
@@ -59,33 +59,43 @@ let
 end
 
 # Lanczos selective orthogonalization, doesn't trigger.
-#let
-#        evals_count = 10
-#        evals_true = Array{Float64}(undef, evals_count)
-#        make_functional_decay!(evals_true, Interval(0.95, 1), matern_1_2)
-#        vec_rand = Array{Float64}(undef, evals_count)
-#        vec_rand /= sqrt(sum(vec_rand .* vec_rand))
-#        make_kronecker_quasirand!(vec_rand)
-#        A = Array{Float64}(undef, evals_count, evals_count)
-#        make_matrix!(A, vec_rand, evals_true)
-#        c = SelectiveOrthogonalization(vec_rand, evals_count)
-#        s = DeflatedSubspace(evals_count, evals_count)
-#        subspace_dim = 0
-#        subspace_dim, deflation = lanczos!(A, c, s, subspace_dim)
-#        # subspace_dim == 0, no selective orthogonalization was triggered.
-#        println("steps_left: ", s.budget - subspace_dim)
-#        c.evec_row[subspace_dim+1:s.budget] .= zeros(s.budget)
-#        c.evec_row[subspace_dim+1] = 1.0
-#        @views qr_tridiag!(c.diagonal[subspace_dim+1:s.budget], c.subdiagonal[subspace_dim+1:s.budget-1],
-#                                                                c.evec_row[subspace_dim+1:s.budget])
-#        evals_lanczos = c.diagonal
-#        println("evals_lanczos ", evals_lanczos)
-#        evals_error = maximum(abs.(evals_true .- evals_lanczos) ./ abs.(evals_true))
-#        println("maximum eigenvalue error ", evals_error)
-#end
+let
+        println("selective orthogonalization; doesn't trigger")
+        evals_count = 10
+        evals_true = Array{Float64}(undef, evals_count)
+        make_functional_decay!(evals_true, Interval(0.95, 1), matern_1_2)
+        vec_rand = Array{Float64}(undef, evals_count)
+        make_kronecker_quasirand!(vec_rand)
+        vec_rand ./= sqrt(sum(vec_rand .* vec_rand))
+        A = Array{Float64}(undef, evals_count, evals_count)
+        make_matrix!(A, vec_rand, evals_true)
+        vec_rand = Array{Float64}(undef, evals_count)
+        make_kronecker_quasirand!(vec_rand)
+        vec_rand ./= sqrt(sum(vec_rand .* vec_rand))
+        c = SelectiveOrthogonalization(vec_rand, evals_count)
+        s = DeflatedSubspace(evals_count, evals_count)
+        deflation = true 
+        while deflation
+                s, deflation = lanczos!(A, c, s)
+                #make_kronecker_quasirand!(c.curr)
+                #c.curr .= c.curr ./ sqrt(sum(c.curr .* c.curr))
+        end
+        diagonal = get_diagonal(c, s, s.budget)
+        subdiagonal = get_subdiagonal(c, s, s.budget-1)
+        evec_row = get_evec_row(c, s, s.budget)
+        fill!(evec_row, 0.0)
+        evec_row[1] = 1.0
+        qr_tridiag!(diagonal, subdiagonal, evec_row)
+        evals_lanczos = c.diagonal
+        println("evals_true ", evals_true)
+        println("evals_lanczos ", evals_lanczos)
+        evals_error = maximum(abs.(evals_true .- evals_lanczos) ./ abs.(evals_true))
+        println("maximum eigenvalue error ", evals_error)
+end
 
 # Lanczos no orthogonalization. Cook an example where SO isn't triggered.
 let
+        println("no orthogonalization")
         evals_count = 10
         evals_true = Array{Float64}(undef, evals_count)
         make_functional_decay!(evals_true, Interval(0.95, 1), matern_1_2)
@@ -109,6 +119,7 @@ end
 
 # Lanczos with selective orthogonalization; SO actually triggers.
 let
+        println("selective orthogonalization actually triggers.")
         evals_count = 30
         evals_true = Array{Float64}(undef, evals_count)
         make_functional_decay!(evals_true, Interval(0.95, 1), matern_1_2)
@@ -125,13 +136,12 @@ let
         deflation = true 
         while deflation
                 s, deflation = lanczos!(A, c, s)
-                make_kronecker_quasirand!(c.curr)
+                c.curr .= randn(evals_count)
                 c.curr .= c.curr ./ sqrt(sum(c.curr .* c.curr))
-                println("dimension ", s.dim)
         end
-        diagonal = get_diagonal(c, s)
-        subdiagonal = get_subdiagonal(c, s)
-        evec_row = get_evec_row(c, s)
+        diagonal = get_diagonal(c, s, s.budget-s.dim)
+        subdiagonal = get_subdiagonal(c, s, s.budget-s.dim-1)
+        evec_row = get_evec_row(c, s, s.budget-s.dim)
         fill!(evec_row, 0.0)
         evec_row[1] = 1.0
         qr_tridiag!(diagonal, subdiagonal, evec_row)
